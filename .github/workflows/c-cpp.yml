@@ -3,251 +3,157 @@ name: linux-ksmbd-oot CI
 on:
   push:
     branches:
-    - master
-    - next
   pull_request:
     branches:
-    - master
-    - next
 
 jobs:
   build:
 
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
 
     steps:
     - uses: actions/checkout@v4
     - name: Download the kernel
       run: |
         sudo apt-get update
-        sudo apt-get install libelf-dev wget tar gzip python2.7
-        wget https://mirrors.edge.kernel.org/pub/linux/kernel/v5.x/linux-5.4.109.tar.gz
-        tar xf linux-5.4.109.tar.gz
-        mv linux-5.4.109 linux-stable
-    - name: Prerequisite for xfstests testing
+        sudo apt-get install libelf-dev wget tar gzip python3 git clang libdw-dev libdwarf-dev
+        git clone --depth 1 -b azure-fde-6.17 https://git.launchpad.net/~canonical-kernel/ubuntu/+source/linux-azure/+git/noble linux-azure
+
+    - name: Prerequisite for xfstests & smbtorture testing
       run: |
         sudo apt-get install cifs-utils
         sudo apt-get install linux-headers-$(uname -r)
-        sudo apt-get install autoconf libtool pkg-config libnl-3-dev libnl-genl-3-dev
+        sudo apt-get install autoconf libtool pkg-config libnl-3-dev libnl-genl-3-dev libglib2.0-dev
         sudo apt-get install xfslibs-dev uuid-dev libtool-bin xfsprogs libgdbm-dev gawk fio attr libattr1-dev libacl1-dev libaio-dev
         sudo apt-get install liblmdb-dev libgnutls28-dev libgpgme-dev libjansson-dev libarchive-dev libacl1-dev
         sudo apt-get install gnutls-bin libparse-yapp-perl libjansson-dev libarchive-dev libjson-perl
-        git clone https://github.com/cifsd-team/ksmbd-tools
+        sudo apt-get install libgettextpo-dev libinih-dev liburcu-dev libdevmapper-dev libicu-dev
+
+        git clone -b v1-sanitizer-on-master https://github.com/yskzalloc/ksmbd-tools.git
+        git clone https://github.com/namjaejeon/cifsd-test-result
+        git clone --depth 1 https://github.com/samba-team/samba.git
+        git clone --depth 1 git://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git
+
         export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
         export PATH=/usr/local/lib:$PATH
         sudo useradd fsgqa
         sudo useradd 123456-fsgqa
-    - name: Copy ksmbd source to kernel
-      run: |
-        mv linux-stable ../
-        mkdir ../linux-stable/fs/ksmbd
-        cp -ar * ../linux-stable/fs/ksmbd/
-    - name: Compile with 5.4 kernel
-      run: |
-        cd ../linux-stable
-        yes "" | make oldconfig > /dev/null
-        echo 'obj-$(CONFIG_SMB_SERVER) += ksmbd/' >> fs/Makefile
-        echo 'source "fs/ksmbd/Kconfig"' >> fs/Kconfig
-        echo 'CONFIG_SMB_SERVER=m' >> .config
-        echo 'CONFIG_SMB_INSECURE_SERVER=y' >> .config
-        echo '# CONFIG_SMB_SERVER_SMBDIRECT is not set' >> .config
-        echo '# CONFIG_SMB_SERVER_CHECK_CAP_NET_ADMIN is not set' >> .config
-        make -j$((`nproc`+1)) fs/ksmbd/ksmbd.ko
 
-        yes "" | make oldconfig > /dev/null
-        echo 'obj-$(CONFIG_SMB_SERVER) += ksmbd/' >> fs/Makefile
-        echo 'source "fs/ksmbd/Kconfig"' >> fs/Kconfig
-        echo 'CONFIG_SMB_SERVER=m' >> .config
-        echo '# CONFIG_SMB_INSECURE_SERVER is not set' >> .config
-        echo '# CONFIG_SMB_SERVER_SMBDIRECT is not set' >> .config
-        echo '# CONFIG_SMB_SERVER_CHECK_CAP_NET_ADMIN is not set' >> .config
-        make -j$((`nproc`+1)) fs/ksmbd/ksmbd.ko
-
-        yes "" | make oldconfig > /dev/null
-        echo 'obj-$(CONFIG_SMB_SERVER) += ksmbd/' >> fs/Makefile
-        echo 'source "fs/ksmbd/Kconfig"' >> fs/Kconfig
-        echo 'CONFIG_SMB_SERVER=m' >> .config
-        echo '# CONFIG_SMB_INSECURE_SERVER is not set' >> .config
-        echo '# CONFIG_SMB_SERVER_SMBDIRECT is not set' >> .config
-        echo '# CONFIG_SMB_SERVER_CHECK_CAP_NET_ADMIN is not set' >> .config
-        make -j$((`nproc`+1)) fs/ksmbd/ksmbd.ko
-    - name: Compile and insmod ksmbd module
+    - name: Compile and load CIFS & KSMBD module
+      working-directory: linux-azure
       run: |
         uname -r
-        cd ../ksmbd
-        make > /dev/null
-        sudo make install > /dev/null
-        sudo modprobe ksmbd
+        git --no-pager log -1 --oneline
+
+        make localmodconfig > /dev/null
+
+        ./scripts/config --module CONFIG_CIFS
+        ./scripts/config --enable CONFIG_CIFS_STATS2
+        ./scripts/config --enable CONFIG_CIFS_ALLOW_INSECURE_LEGACY
+        ./scripts/config --enable CONFIG_CIFS_UPCALL
+        ./scripts/config --enable CONFIG_CIFS_XATTR
+        ./scripts/config --enable CONFIG_CIFS_POSIX
+        ./scripts/config --enable CONFIG_CIFS_DEBUG
+        ./scripts/config --enable CONFIG_CIFS_DEBUG2
+        ./scripts/config --enable CONFIG_CIFS_DEBUG_DUMP_KEYS
+        ./scripts/config --enable CONFIG_CIFS_DFS_UPCALL
+        ./scripts/config --enable CONFIG_CIFS_SWN_UPCALL
+        ./scripts/config --enable CONFIG_CIFS_SMB_DIRECT
+        ./scripts/config --enable CONFIG_CIFS_FSCACHE
+        ./scripts/config --enable CONFIG_CIFS_ROOT
+        ./scripts/config --enable CONFIG_CIFS_COMPRESSION
+
+        ./scripts/config --module CONFIG_SMB_SERVER
+        ./scripts/config --enable CONFIG_SMB_SERVER_SMBDIRECT
+        ./scripts/config --enable CONFIG_SMB_SERVER_CHECK_CAP_NET_ADMIN
+        ./scripts/config --enable CONFIG_SMB_SERVER_KERBEROS5
+
+        make olddefconfig
+
+        make -j$((`nproc`+1)) -C /lib/modules/$(uname -r)/build M=$(pwd)/fs/smb/server modules
+        make -j$((`nproc`+1)) -C /lib/modules/$(uname -r)/build M=$(pwd)/fs/smb/client modules
+
         sudo modprobe cifs
+        sudo modprobe ksmbd
+
+        sudo rmmod ksmbd || true
+        sudo rmmod cifs || true
+
+        sudo insmod fs/smb/client/cifs.ko
+        sudo insmod fs/smb/server/ksmbd.ko
+
     - name: Compile and install ksmbd-tools
+      working-directory: ksmbd-tools
       run: |
-        cd ksmbd-tools
         ./autogen.sh
-        ./configure --sysconfdir=/etc --with-rundir=/run
+        CC=clang ./configure --enable-asan --sysconfdir=/etc --with-rundir=/run
         make -j$((`nproc`+1))
         sudo make install
-    - name: Run xfstests testsuite
+
+    - name: Prepare testsuite
       run: |
-        cd ..
         sudo mkdir -p /etc/ksmbd/
         sudo mkdir -p /mnt/1
         sudo mkdir -p /mnt/2
         sudo mkdir -m 777 -p /mnt/test1
         sudo mkdir -m 777 -p /mnt/test2
         sudo mkdir -m 777 -p /mnt/test3
+
         ksmbd.adduser -P ./ksmbdpwd.db -a testuser -p 1234
-        git clone https://github.com/namjaejeon/cifsd-test-result
+
         cp cifsd-test-result/testsuites/smb.conf .
         cat smb.conf
-        sudo ksmbd.mountd -n -C ./smb.conf -P ./ksmbdpwd.db&
+        sudo ksmbd.mountd -n -C ./smb.conf -P ./ksmbdpwd.db 2>&1 | tee ksmbd-tools-asan.log &
+
         sleep 1
         ps -ax | grep smbd
-        cd cifsd-test-result/testsuites
-        tar xzvf xfstests-cifsd.tgz > /dev/null
-        cd xfstests-cifsd
+        
+    - name: Run xfstests
+      working-directory: xfsprogs-dev
+      run: |
         make -j$((`nproc`+1)) > /dev/null
+
+        set +e
+
         sudo ./check cifs/001
-        sudo ./check generic/001
-        sudo ./check generic/002
-        sudo ./check generic/005
-        sudo ./check generic/006
-        sudo ./check generic/007
-        sudo ./check generic/008
-        sudo ./check generic/010
+        sudo ./check generic/001 generic/002 generic/005 generic/006 generic/007 generic/008 generic/010
+
         sed -e "s/count=1000/count=100/" -e "s/-p 5/-p 3/" tests/generic/011 > tests/generic/011.new
         sed -e "s/-p 5/-p 3/" tests/generic/011.out > tests/generic/011.out.new
         mv tests/generic/011.new tests/generic/011
         mv tests/generic/011.out.new tests/generic/011.out
-        sudo ./check generic/011
-        #        sudo ./check generic/013
-        sudo ./check generic/014
-        sudo ./check generic/023
-        sudo ./check generic/024
-        sudo ./check generic/028
-        sudo ./check generic/029
-        sudo ./check generic/030
-        sudo ./check generic/032
-        sudo ./check generic/033
-        sudo ./check generic/036
-        sudo ./check generic/037
-        sudo ./check generic/043
-        sudo ./check generic/044
-        sudo ./check generic/045
-        sudo ./check generic/046
-        sudo ./check generic/051
-        sudo ./check generic/069
-        #        sudo ./check generic/070
-        sudo ./check generic/071
-        sudo ./check generic/072
-        sudo ./check generic/074
-        sudo ./check generic/080
-        sudo ./check generic/084
-        sudo ./check generic/086
-        sudo ./check generic/091
-        sudo ./check generic/095
-        sudo ./check generic/098
-        sudo ./check generic/100
-        sudo ./check generic/103
-        sudo ./check generic/109
-        sudo ./check generic/113
-        sudo ./check generic/117
-        sudo ./check generic/124
-        sudo ./check generic/125
-        sudo ./check generic/129
-        sudo ./check generic/130
-        sudo ./check generic/132
-        sudo ./check generic/133
-        sudo ./check generic/135
-        sudo ./check generic/141
-        sudo ./check generic/169
-        sudo ./check generic/198
-        sudo ./check generic/207
-        sudo ./check generic/208
-        sudo ./check generic/210
-        sudo ./check generic/211
-        sudo ./check generic/212
-        sudo ./check generic/214
-        sudo ./check generic/215
-        sudo ./check generic/221
-        sudo ./check generic/225
-        sudo ./check generic/228
-        sudo ./check generic/236
-        sudo ./check generic/239
-        sudo ./check generic/241
-        sudo ./check generic/245
-        sudo ./check generic/246
-        sudo ./check generic/247
-        sudo ./check generic/248
-        sudo ./check generic/249
-        sudo ./check generic/257
-        sudo ./check generic/258
-        sudo ./check generic/263
-        sudo ./check generic/308
-        sudo ./check generic/309
-        sudo ./check generic/310
-        sudo ./check generic/313
-        sudo ./check generic/315
-        sudo ./check generic/316
-        sudo ./check generic/323
-        sudo ./check generic/337
-        sudo ./check generic/339
-        sudo ./check generic/340
-        sudo ./check generic/344
-        sudo ./check generic/345
-        sudo ./check generic/346
-        sudo ./check generic/349
-        sudo ./check generic/350
-        sudo ./check generic/354
-        sudo ./check generic/360
-        sudo ./check generic/377
-        sudo ./check generic/391
-        sudo ./check generic/393
-        sudo ./check generic/394
-        sudo ./check generic/406
-        sudo ./check generic/412
-        sudo ./check generic/420
-        sudo ./check generic/428
-        sudo ./check generic/430
-        sudo ./check generic/431
-        sudo ./check generic/432
-        sudo ./check generic/433
-        sudo ./check generic/436
-        sudo ./check generic/437
-        sudo ./check generic/438
-        sudo ./check generic/439
-        sudo ./check generic/443
-        sudo ./check generic/445
-        sudo ./check generic/446
-        sudo ./check generic/448
-        sudo ./check generic/451
-        sudo ./check generic/452
-        sudo ./check generic/454
-        sudo ./check generic/460
-        sudo ./check generic/461
-        sudo ./check generic/464
-        sudo ./check generic/465
-        sudo ./check generic/469
-        sudo ./check generic/504
-        sudo ./check generic/523
-        sudo ./check generic/524
-        sudo ./check generic/528
-        sudo ./check generic/532
-        sudo ./check generic/533
-        sudo ./check generic/539
-        sudo ./check generic/565
-        sudo ./check generic/567
-        sudo ./check generic/568
-        sudo ./check generic/599
 
-        cd ..
-        tar xzvf samba-cifsd.tgz > /dev/null
-        cd samba-cifsd/
-        ./configure --disable-cups --disable-iprint --without-ad-dc --without-ads --without-ldap --without-pam --with-shared-modules='!vfs_snapper'
+        sudo ./check generic/011 generic/013 generic/014 generic/023 generic/024 generic/028 generic/029 generic/030 \
+                     generic/032 generic/033 generic/036 generic/037 generic/043 generic/044 generic/045 generic/046 \
+                     generic/051 generic/069 generic/070 generic/071 generic/072 generic/074 generic/080 generic/084 \
+                     generic/086 generic/091 generic/095 generic/098 generic/095 generic/098 generic/100 generic/103 \
+                     generic/109 generic/113 generic/117 generic/124 generic/125 generic/129 generic/130 generic/132 \
+                     generic/133 generic/135 generic/141 generic/169 generic/198 generic/207 generic/208 generic/210 \
+                     generic/211 generic/212 generic/214 generic/215 generic/221 generic/225 generic/228 generic/236 \
+                     generic/239 generic/241 generic/245 generic/246 generic/247 generic/248 generic/249 generic/257 \
+                     generic/258 generic/263 generic/308 generic/309 generic/310 generic/313 generic/315 generic/316 \
+                     generic/323 generic/337 generic/339 generic/340 generic/344 generic/345 generic/346 generic/349 \
+                     generic/350 generic/354 generic/360 generic/377 generic/391 generic/393 generic/394 generic/406 \
+                     generic/412 generic/420 generic/428 generic/430 generic/431 generic/432 generic/433 generic/436 \
+                     generic/437 generic/438 generic/439 generic/443 generic/445 generic/446 generic/448 generic/451 \
+                     generic/452 generic/454 generic/460 generic/461 generic/464 generic/465 generic/469 generic/504 \
+                     generic/523 generic/524 generic/528 generic/532 generic/533 generic/539 generic/565 generic/567 \
+                     generic/568 generic/599
+
+        set -e
+
+    - name: Run smbtorture
+      working-directory: samba
+      run: |
+        ./configure --disable-cups --disable-iprint --without-ad-dc --without-ads --without-ldap --without-pam --with-shared-modules='!vfs_snapper' > /dev/null
         make -j$((`nproc`+1)) bin/smbtorture > /dev/null
+
+        set +e
 
         # smb2 connect test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.connect
         sudo rm -rf /mnt/test3/*
+
         # smb2 read test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.read.eof
         sudo rm -rf /mnt/test3/*
@@ -257,6 +163,7 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.read.access
         sudo rm -rf /mnt/test3/*
+
         # smb2 scan test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.scan.scan
         sudo rm -rf /mnt/test3/*
@@ -266,6 +173,7 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.scan.find
         sudo rm -rf /mnt/test3/*
+
         # smb2 dir test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.dir.find
         sudo rm -rf /mnt/test3/*
@@ -283,6 +191,7 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.dir.large-files
         sudo rm -rf /mnt/test3/*
+
         # smb2 rename test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.rename.simple
         sudo rm -rf /mnt/test3/*
@@ -298,18 +207,21 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.rename.msword
         sudo rm -rf /mnt/test3/*
-        # - ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.rename.rename_dir_openfile
-        # - sudo rm -rf /mnt/test3/*
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.rename.rename_dir_openfile
+        sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.rename.rename_dir_bench
         sudo rm -rf /mnt/test3/*
+
         # smb2 maxfid test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.maxfid
         sudo rm -rf /mnt/test3/*
+
         # smb2 sharemode test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.sharemode.sharemode-access
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.sharemode.access-sharemode
         sudo rm -rf /mnt/test3/*
+
         # smb2 compound test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.related1
         sudo rm -rf /mnt/test3/*
@@ -325,14 +237,15 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.invalid3
         sudo rm -rf /mnt/test3/*
-        # - ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.interim1 #fail
-        # - sudo rm -rf /mnt/test3/*
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.interim1 #fail
+        sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.interim2
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.compound-break
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.compound.compound-padding
         sudo rm -rf /mnt/test3/*
+
         # smb2 streams test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.dir
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.io
@@ -343,14 +256,15 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.rename
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.rename2
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.create-disposition
-        ##./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.attributes
-        # - ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.delete
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.attributes
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.delete
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.zero-byte
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.streams.basefile-rename-with-open-stream
         sudo rm -rf /mnt/test3/*
+
         # smb2 create test
-        ##./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.gentest
-        ##./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.blob
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.gentest
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.blob
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.open
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.brlocked
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.multi
@@ -364,6 +278,7 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.create.nulldacl
         sudo rm -rf /mnt/test3/*
+
         # smb2 delete-on-close test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.delete-on-close-perms.OVERWRITE_IF
         sudo rm -rf /mnt/test3/*
@@ -379,6 +294,7 @@ jobs:
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.delete-on-close-perms.FIND_and_set_DOC
         sudo rm -rf /mnt/test3/*
+
         # smb2 oplock test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.exclusive1
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.exclusive2
@@ -412,7 +328,7 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.batch24
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.batch25
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.batch26 #fail
-        # - ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.stream1 #fail
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.stream1 #fail
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.doc
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.brl1
         sudo rm -rf /mnt/test3/*
@@ -425,7 +341,8 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.levelii501
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.oplock.levelii502
-        #sudo rm -rf /mnt/test3/*
+        sudo rm -rf /mnt/test3/*
+
         # smb2 session test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.session.reconnect1
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.session.reconnect2
@@ -433,6 +350,7 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.session.reauth2
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.session.reauth3
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.session.reauth4
+
         # smb2 lock test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lock.valid-request
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lock.rw-shared
@@ -450,6 +368,7 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lock.contend
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lock.context
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lock.truncate
+
         # smb2 leases test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.request
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.nobreakself
@@ -465,13 +384,13 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking1
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking2
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking3
-        #./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking4
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking4
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking5
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.breaking6
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.lock1
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.complex1
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.timeout
-        #./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.unlink
+        ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.unlink
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.v2_request_parent
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.v2_request
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.v2_epoch1
@@ -479,6 +398,7 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.v2_epoch3
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.v2_complex2
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.lease.v2_rename
+
         # smb2 acls test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.acls.CREATOR
         sudo rm -rf /mnt/test3/*
@@ -491,10 +411,12 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.acls.INHERITFLAGS
         sudo rm -rf /mnt/test3/*
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.acls.DYNAMIC
+
         # smb2 credits test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.credits.session_setup_credits_granted
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.credits.single_req_credits_granted
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.credits.skipped_mid
+
         # smb2 durable handle test
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.durable-open.open-oplock
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.durable-open.open-lease
@@ -523,3 +445,14 @@ jobs:
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.durable-v2-open.reopen2c
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.durable-v2-open.reopen2-lease
         ./bin/smbtorture //127.0.0.1/cifsd-test3/ -Utestuser%1234 smb2.durable-v2-open.reopen2-lease-v2
+
+        set -e
+
+    - name: Report ksmbd-tools
+      run: |
+        sudo chmod 777 ksmbd-tools-asan.log
+        cat ksmbd-tools-asan.log
+
+    - name: Report kernel log
+      run: |
+        sudo dmesg
