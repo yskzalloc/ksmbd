@@ -111,6 +111,7 @@ jobs:
     - name: Run xfstests
       working-directory: xfsprogs-dev
       run: |
+        ./configure --disable-scrub
         make -j$((`nproc`+1))
 
         set +e
