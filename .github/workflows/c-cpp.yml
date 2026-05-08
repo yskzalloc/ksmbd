@@ -111,7 +111,7 @@ jobs:
     - name: Run xfstests
       working-directory: xfsprogs-dev
       run: |
-        make -j$((`nproc`+1)) > /dev/null
+        make -j$((`nproc`+1))
 
         set +e
 
