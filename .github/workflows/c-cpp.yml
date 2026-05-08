@@ -27,12 +27,12 @@ jobs:
         sudo apt-get install xfslibs-dev uuid-dev libtool-bin xfsprogs libgdbm-dev gawk fio attr libattr1-dev libacl1-dev libaio-dev
         sudo apt-get install liblmdb-dev libgnutls28-dev libgpgme-dev libjansson-dev libarchive-dev libacl1-dev
         sudo apt-get install gnutls-bin libparse-yapp-perl libjansson-dev libarchive-dev libjson-perl
-        sudo apt-get install libgettextpo-dev gettext libinih-dev liburcu-dev libdevmapper-dev libicu-dev linux-libc-dev
+        sudo apt-get install libgettextpo-dev gettext libinih-dev liburcu-dev libdevmapper-dev libicu-dev
 
         git clone -b v1-sanitizer-on-master https://github.com/yskzalloc/ksmbd-tools.git
         git clone https://github.com/namjaejeon/cifsd-test-result
         git clone --depth 1 https://github.com/samba-team/samba.git
-        git clone --depth 1 git://git.kernel.org/pub/scm/fs/xfs/xfsprogs-dev.git
+        git clone --branch v6.17.0 --single-branch --depth 1 https://kernel.googlesource.com/pub/scm/fs/xfs/xfsprogs-dev.git
 
         export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
         export PATH=/usr/local/lib:$PATH
@@ -111,7 +111,6 @@ jobs:
     - name: Run xfstests
       working-directory: xfsprogs-dev
       run: |
-        ./configure --disable-scrub
         make -j$((`nproc`+1))
 
         set +e
