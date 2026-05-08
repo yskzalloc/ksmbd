@@ -27,7 +27,7 @@ jobs:
         sudo apt-get install xfslibs-dev uuid-dev libtool-bin xfsprogs libgdbm-dev gawk fio attr libattr1-dev libacl1-dev libaio-dev
         sudo apt-get install liblmdb-dev libgnutls28-dev libgpgme-dev libjansson-dev libarchive-dev libacl1-dev
         sudo apt-get install gnutls-bin libparse-yapp-perl libjansson-dev libarchive-dev libjson-perl
-        sudo apt-get install libgettextpo-dev libinih-dev liburcu-dev libdevmapper-dev libicu-dev
+        sudo apt-get install libgettextpo-dev gettext libinih-dev liburcu-dev libdevmapper-dev libicu-dev
 
         git clone -b v1-sanitizer-on-master https://github.com/yskzalloc/ksmbd-tools.git
         git clone https://github.com/namjaejeon/cifsd-test-result
